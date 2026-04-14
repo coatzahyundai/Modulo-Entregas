@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>HYUNDAI COATZACOALCOS | Sistema de Entregas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        .hyundai-blue { background-color: #002C5F; }
+        .hyundai-text { color: #002C5F; }
+        .status-apartado { background-color: #E5E7EB !important; border-left: 4px solid #9CA3AF; cursor: pointer; }
+        .status-autorizado { background-color: #DCFCE7 !important; border-left: 4px solid #166534; cursor: pointer; }
+        .status-rechazado { background-color: #FEE2E2 !important; color: #991B1B; }
+        
+        /* Ajuste para que al imprimir se vea bien la tabla */
+        @media print {
+            body { background-color: white !important; }
+            .no-print { display: none !important; }
+            table { font-size: 10px !important; }
+        }
+    </style>
+</head>
+<body class="bg-slate-100">
+
+<script>
+    // ⚠️ REEMPLAZA ESTO CON TU URL DE APPS SCRIPT QUE YA FUNCIONA
+    const API_URL = "https://script.google.com/macros/s/AKfycbwF3MjSgV8lPuEscTTkm5EAApUgXZvtVAt7nbPzAeH0SzU1AOCROcGp3OrS84Y7LtYE/exec"; 
+    
+    let SESION = { nombre: "", nivel: "" };
+    let ENTREGAS_DATA = [];
+    let FECHA_ACTUAL = new Date();
+    let VISTA = 'semanal'; 
+
+    // --- FUNCIONES DE LIMPIEZA DE DATOS ---
+    function normalizarFecha(val) {
+        if (!val) return "";
+        let str = String(val);
+        if (str.match(/^\d{2}\/\d{2}\/\d{4}$/)) return str;
+        if (str.includes('T')) {
+            let partes = str.split('T')[0].split('-');
+            if (partes.length === 3) return `${partes[2]}/${partes[1]}/${partes[0]}`;
+        }
+        let d = new Date(str);
+        if (!isNaN(d.getTime())) {
+            return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth()+1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+        }
+        return str;
+    }
+
+    // --- 1. AUTENTICACIÓN POR PIN Y ROL ---
+    async function login() {
+        const roll = document.getElementById('rollInp').value;
+        const pin = document.getElementById('pinInp').value;
+
+        if(!roll || !pin) {
+            return Swal.fire('Atención', 'Por favor selecciona un rol e ingresa tu PIN', 'warning');
+        }
+
+        Swal.fire({ title: 'Validando...', didOpen: () => Swal.showLoading() });
+
+        try {
+            const resp = await fetch(API_URL, {
+                method: 'POST',
+                body: JSON.stringify({ action: 'login', roll: roll, pin: pin })
+            });
+            const data = await resp.json();
+            
+            if(data.status === 'success') {
+                SESION = data;
+                document.getElementById('loginBox').classList.add('hidden');
+                document.getElementById('app').classList.remove('hidden');
+                document.getElementById('displayUser').innerText = `${SESION.nombre} | Perfil: ${SESION.nivel}`;
+                await refrescarTodo();
+            } else {
+                Swal.fire('Error', 'PIN o Rol incorrectos', 'error');
+            }
+        } catch(e) {
+            Swal.fire('Error', 'No se pudo conectar con la base de datos', 'error');
+        }
+    }
+
+    // --- 2. SINCRONIZACIÓN Y LECTURA ---
+    async function refrescarTodo() {
+        try {
+            const resp = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ action: 'read' }) });
+            let rawData = await resp.json();
+            
+            ENTREGAS_DATA = rawData.map(e => ({
+                ...e,
+                FechaLimpia: normalizarFecha(e.Fecha)
+            }));
+
+            renderVista();
+            renderBandejas();
+            Swal.close();
+        } catch(e) { 
+            console.log("Error al leer datos"); 
+            Swal.close();
+        }
+    }
+
+    // --- 3. CONTROLES DE VISTA Y FECHAS ---
+    function cambiarVista(tipo) {
+        VISTA = tipo;
+        document.getElementById('btnSemanal').className = tipo === 'semanal' ? 'bg-blue-900 text-white px-4 py-2 rounded-l text-xs font-bold no-print' : 'bg-gray-200 text-gray-600 px-4 py-2 rounded-l text-xs font-bold hover:bg-gray-300 no-print';
+        document.getElementById('btnMensual').className = tipo === 'mensual' ? 'bg-blue-900 text-white px-4 py-2 rounded-r text-xs font-bold no-print' : 'bg-gray-200 text-gray-600 px-4 py-2 rounded-r text-xs font-bold hover:bg-gray-300 no-print';
+        renderVista();
+    }
+
+    function cambiarFecha(val) {
+        if(!val) return;
+        const partes = val.split('-');
+        FECHA_ACTUAL = new Date(partes[0], partes[1]-1, partes[2]);
+        renderVista();
+    }
+
+    function formatearFecha(d) {
+        return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth()+1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+    }
+
+    // --- 4. RENDERIZADO DEL CALENDARIO / LISTA ---
+    function renderVista() {
+        const container = document.getElementById('calendarioContainer');
+        if(VISTA === 'mensual') renderVistaMensual(container);
+        else renderVistaSemanal(container);
+    }
+
+    function renderVistaSemanal(container) {
+        const dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+        const horas = ['11:00 AM', '01:00 PM', '03:00 PM', '05:00 PM', '07:00 PM'];
+        
+        let lunes = new Date(FECHA_ACTUAL);
+        let diaSemana = lunes.getDay();
+        let diferencia = lunes.getDate() - diaSemana + (diaSemana === 0 ? -6 : 1);
+        lunes.setDate(diferencia);
+
+        let html = `<table class="w-full border-collapse bg-white text-center text-sm table-fixed">
+            <thead class="hyundai-blue text-white"><tr><th class="p-2 border w-24">Horario</th>`;
+        
+        let fechasSemana = [];
+        dias.forEach((d, i) => {
+            let f = new Date(lunes);
+            f.setDate(lunes.getDate() + i);
+            let fStr = formatearFecha(f);
+            fechasSemana.push({ nombre: d, fechaStr: fStr });
+            html += `<th class="p-2 border w-40">${d}<br><span class="text-[10px] font-light">${fStr}</span></th>`;
+        });
+        html += `</tr></thead><tbody>`;
+
+        horas.forEach(h => {
+            html += `<tr><td class="p-2 border font-bold bg-gray-50 text-xs align-middle">${h}</td>`;
+            fechasSemana.forEach(diaObj => {
+                if(diaObj.nombre === 'Sábado' && (h !== '11:00 AM' && h !== '01:00 PM')) {
+                    html += `<td class="border bg-gray-200"></td>`;
+                } else {
+                    let ocupado = ENTREGAS_DATA.find(e => (e.FechaLimpia === diaObj.fechaStr || e.FechaLimpia === diaObj.nombre) && e.Hora === h && e.Estado !== 'Rechazado');
+                    
+                    if(ocupado) {
+                        let esAutorizado = ocupado.Estado === 'Autorizado';
+                        let clase = esAutorizado ? 'status-autorizado' : 'status-apartado';
+                        let tituloHeader = esAutorizado ? '✅ AUTORIZADO' : '⏳ EN REVISIÓN';
+                        let colorHeader = esAutorizado ? 'text-green-800' : 'text-gray-600';
+                        
+                        let textoHTML = `
+                            <div class="text-[9px] leading-[1.3] text-left p-1 text-gray-800 h-full">
+                                <div class="font-bold mb-1 ${colorHeader}">${tituloHeader}</div>
+                                <div class="truncate"><b>CLI:</b> ${ocupado.Cliente}</div>
+                                <div class="truncate"><b>ASE:</b> ${ocupado.Asesor}</div>
+                                <div class="truncate"><b>AUT:</b> ${ocupado.Auto_Completo}</div>
+                                <div class="truncate"><b>VIN:</b> ${ocupado.VIN}</div>
+                                <div class="truncate"><b>ACC:</b> ${ocupado.Accesorios} | <b>UBI:</b> ${ocupado.Ubicacion}</div>
+                            </div>`;
+
+                        html += `<td class="border align-top hover:bg-gray-50 transition ${clase}" 
+                                    onclick="clickCelda('${diaObj.fechaStr}', '${h}', '${diaObj.nombre}')">
+                                    ${textoHTML}
+                                 </td>`;
+                    } else {
+                        html += `<td class="border p-2 align-middle hover:bg-blue-50 transition cursor-pointer text-gray-300 hover:text-gray-500" 
+                                    onclick="clickCelda('${diaObj.fechaStr}', '${h}', '${diaObj.nombre}')">
+                                    Disponible
+                                 </td>`;
+                    }
+                }
+            });
+            html += `</tr>`;
+        });
+        container.innerHTML = html + `</tbody></table>`;
+    }
+
+    function renderVistaMensual(container) {
+        let mesActual = FECHA_ACTUAL.getMonth() + 1;
+        let anioActual = FECHA_ACTUAL.getFullYear();
+        
+        let filtrados = ENTREGAS_DATA.filter(e => {
+            if(!e.FechaLimpia.includes('/')) return false;
+            let partes = e.FechaLimpia.split('/');
+            return parseInt(partes[1]) === mesActual && parseInt(partes[2]) === anioActual && e.Estado !== 'Rechazado';
+        });
+
+        let html = `<div class="p-4 bg-white"><h3 class="font-bold mb-4 hyundai-text">Todas las entregas del mes</h3>
+                    <table class="w-full text-left text-xs border">
+                    <thead class="bg-gray-100 border-b hyundai-text">
+                        <tr>
+                            <th class="p-2">Fecha/Hora</th><th class="p-2">Cliente</th><th class="p-2">Asesor</th>
+                            <th class="p-2">Auto</th><th class="p-2">VIN</th><th class="p-2">Accesorios</th>
+                            <th class="p-2">Ubicación</th><th class="p-2">Estado</th>
+                        </tr>
+                    </thead><tbody>`;
+        
+        if(filtrados.length === 0) html += `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay entregas programadas este mes.</td></tr>`;
+
+        filtrados.forEach(e => {
+            let color = e.Estado === 'Autorizado' ? 'text-green-600 font-bold' : 'text-gray-600 font-bold';
+            html += `<tr class="border-b hover:bg-gray-50">
+                <td class="p-2 whitespace-nowrap">${e.FechaLimpia} - ${e.Hora}</td>
+                <td class="p-2 font-bold">${e.Cliente}</td>
+                <td class="p-2">${e.Asesor}</td>
+                <td class="p-2">${e.Auto_Completo}</td>
+                <td class="p-2 uppercase">${e.VIN}</td>
+                <td class="p-2">${e.Accesorios}</td>
+                <td class="p-2">${e.Ubicacion}</td>
+                <td class="p-2 ${color}">${e.Estado}</td>
+            </tr>`;
+        });
+        container.innerHTML = html + `</tbody></table></div>`;
+    }
+
+    // --- 5. INTERACCIÓN (CLICS Y FORMULARIOS) ---
+    function clickCelda(fechaStr, hora, nombreDia) {
+        let ocupado = ENTREGAS_DATA.find(e => (e.FechaLimpia === fechaStr || e.FechaLimpia === nombreDia) && e.Hora === hora && e.Estado !== 'Rechazado');
+        const esGerente = SESION.nivel.toLowerCase().includes('geren');
+
+        if (ocupado) {
+            let infoHTML = `<div class="text-left text-sm bg-gray-50 p-4 rounded border mt-2">
+                            <p class="mb-2"><b class="text-blue-900">Cliente:</b> ${ocupado.Cliente}</p>
+                            <p class="mb-2"><b class="text-blue-900">Asesor:</b> ${ocupado.Asesor}</p>
+                            <p class="mb-2"><b class="text-blue-900">Auto:</b> ${ocupado.Auto_Completo}</p>
+                            <p class="mb-2"><b class="text-blue-900">VIN:</b> ${ocupado.VIN}</p>
+                            <p class="mb-2"><b class="text-blue-900">Accesorios:</b> ${ocupado.Accesorios}</p>
+                            <p class="mb-2"><b class="text-blue-900">Ubicación:</b> ${ocupado.Ubicacion}</p>
+                        </div>`;
+
+            if (ocupado.Estado === 'Apartado' && esGerente) {
+                Swal.fire({
+                    title: 'Autorizar Entrega',
+                    html: infoHTML,
+                    showDenyButton: true,
+                    showCancelButton: true,
+                    confirmButtonText: '✅ Autorizar',
+                    denyButtonText: '❌ Rechazar',
+                    cancelButtonText: 'Cerrar',
+                    width: '32em'
+                }).then((result) => {
+                    if(result.isConfirmed) gestionar(ocupado.ID_Entrega, 'autorizar');
+                    else if(result.isDenied) gestionar(ocupado.ID_Entrega, 'rechazar');
+                });
+            } else {
+                Swal.fire({ title: 'Detalles de Entrega', html: infoHTML, confirmButtonText: 'Entendido' });
+            }
+        } else {
+            abrirForm(fechaStr, hora, nombreDia);
+        }
+    }
+
+    function abrirForm(fechaStr, hora, nombreDia) {
+        document.getElementById('f_fechaStr').value = fechaStr; 
+        document.getElementById('f_dia_display').value = `${nombreDia} (${fechaStr})`;
+        document.getElementById('f_hora').value = hora;
+        document.getElementById('f_asesor').value = SESION.nombre;
+        document.getElementById('modalRegistro').classList.remove('hidden');
+    }
+
+    async function enviarSolicitud(e) {
+        e.preventDefault();
+        const vin = document.getElementById('f_vin').value;
+        if(vin.length !== 17) return Swal.fire('VIN Inválido', 'Debe tener exactamente 17 caracteres alfanuméricos', 'warning');
+
+        const payload = {
+            action: 'crear',
+            fecha: document.getElementById('f_fechaStr').value, 
+            hora: document.getElementById('f_hora').value,
+            cliente: document.getElementById('f_cliente').value.toUpperCase(),
+            asesor: SESION.nombre,
+            auto: `${document.getElementById('f_mod').value} ${document.getElementById('f_ver').value} ${document.getElementById('f_age').value}`.toUpperCase(),
+            vin: vin.toUpperCase(),
+            accesorios: document.getElementById('f_acc').value,
+            ubicacion: document.getElementById('f_ubi').value
+        };
+
+        Swal.fire({ title: 'Registrando...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+        
+        await fetch(API_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+        
+        document.getElementById('formEntrega').reset();
+        document.getElementById('modalRegistro').classList.add('hidden');
+        
+        Swal.fire({ title: 'Éxito', text: 'Solicitud enviada a gerencia', icon: 'success', timer: 1500 });
+        setTimeout(refrescarTodo, 1500); 
+    }
+
+    // --- 6. BANDEJAS INFERIORES ---
+    function renderBandejas() {
+        const esGerente = SESION.nivel.toLowerCase().includes('geren');
+        
+        if (esGerente) {
+            document.getElementById('bandejaGerencia').classList.remove('hidden');
+            const listaP = document.getElementById('listaPendientes');
+            listaP.innerHTML = "";
+            const pendientes = ENTREGAS_DATA.filter(e => e.Estado === 'Apartado');
+            
+            if(pendientes.length === 0) listaP.innerHTML = "<p class='p-3 text-sm text-gray-500'>No hay entregas pendientes.</p>";
+            
+            pendientes.forEach(p => {
+                listaP.innerHTML += `
+                    <div class="flex justify-between items-center p-3 border-b text-sm bg-white hover:bg-gray-50">
+                        <div class="grid grid-cols-2 gap-4 w-full pr-4">
+                            <div>
+                                <b class="text-blue-900">${p.Cliente}</b><br>
+                                <span class="text-xs text-gray-500">🗓️ ${p.FechaLimpia} @ ${p.Hora} | 🧑‍💼 ${p.Asesor}</span>
+                            </div>
+                            <div class="text-xs text-gray-600 border-l pl-4">
+                                <b>🚗 Auto:</b> ${p.Auto_Completo}<br>
+                                <b>🔧 VIN:</b> ${p.VIN}
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="gestionar('${p.ID_Entrega}', 'autorizar')" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded shadow font-bold">Autorizar</button>
+                            <button onclick="gestionar('${p.ID_Entrega}', 'rechazar')" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded shadow font-bold">Rechazar</button>
+                        </div>
+                    </div>`;
+            });
+        } else {
+            document.getElementById('bandejaAsesor').classList.remove('hidden');
+            const listaR = document.getElementById('listaRechazadas');
+            listaR.innerHTML = "";
+            const rechazadas = ENTREGAS_DATA.filter(e => e.Estado === 'Rechazado' && e.Asesor === SESION.nombre);
+            
+            if(rechazadas.length === 0) listaR.innerHTML = "<p class='p-3 text-sm text-gray-500'>No tienes entregas rechazadas.</p>";
+            
+            rechazadas.forEach(r => {
+                listaR.innerHTML += `
+                    <div class="p-3 border-b text-xs bg-red-50 text-red-900 flex justify-between items-center">
+                        <div>
+                            <b>❌ Rechazada:</b> ${r.Cliente} (🗓️ ${r.FechaLimpia} @ ${r.Hora})<br>
+                            ${r.Auto_Completo}
+                        </div>
+                    </div>`;
+            });
+        }
+    }
+
+    async function gestionar(id, accion) {
+        Swal.fire({ title: 'Procesando...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+        await fetch(API_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify({ action: accion, id: id }) });
+        
+        Swal.fire({ title: 'Actualizado', text: `Estado guardado exitosamente`, icon: 'success', timer: 1500 });
+        setTimeout(refrescarTodo, 1500); 
+    }
+
+    function logout() { location.reload(); }
+</script>
+
+<div id="loginBox" class="min-h-screen flex items-center justify-center">
+    <div class="bg-white p-10 rounded-2xl shadow-xl w-96 border-t-8 border-blue-900">
+        <h1 class="text-center font-bold text-xl hyundai-text mb-8">HYUNDAI COATZACOALCOS<br><span class="text-sm font-normal text-gray-400">Portal de Entregas</span></h1>
+        
+        <select id="rollInp" class="w-full border p-3 rounded-lg mb-4 outline-none focus:ring-2 ring-blue-900 text-gray-700">
+            <option value="" disabled selected>Selecciona tu Rol</option>
+            <option value="Asesor">Asesor de Ventas</option>
+            <option value="Gerencia">Gerencia</option>
+        </select>
+        
+        <input id="pinInp" type="password" placeholder="Ingresa tu PIN" class="w-full border p-3 rounded-lg mb-8 outline-none focus:ring-2 ring-blue-900 text-center tracking-[0.5em] text-lg font-bold">
+        
+        <button onclick="login()" class="w-full hyundai-blue text-white py-3 rounded-lg font-bold shadow-lg transition hover:bg-blue-800">INGRESAR</button>
+    </div>
+</div>
+
+<div id="app" class="hidden min-h-screen flex flex-col">
+    <header class="hyundai-blue p-4 text-white flex justify-between items-center px-8 shadow-md no-print">
+        <div>
+            <h2 class="font-bold tracking-widest uppercase">Hyundai Coatzacoalcos</h2>
+            <p class="text-[10px] opacity-70">Módulo de Programación de Entregas</p>
+        </div>
+        <div class="flex items-center gap-6">
+            <span id="displayUser" class="text-sm font-bold text-yellow-400"></span>
+            <button onclick="logout()" class="bg-red-600 hover:bg-red-700 px-4 py-1 rounded text-xs text-white font-bold">Cerrar Sesión</button>
+        </div>
+    </header>
+
+    <main class="flex-1 p-6 max-w-[1400px] mx-auto w-full">
+        <div class="flex flex-wrap justify-between items-center mb-6 bg-white p-4 rounded-xl shadow-sm border gap-4 no-print">
+            <div class="flex gap-0 shadow-sm rounded">
+                <button id="btnSemanal" onclick="cambiarVista('semanal')" class="bg-blue-900 text-white px-4 py-2 rounded-l text-xs font-bold">Semanal</button>
+                <button id="btnMensual" onclick="cambiarVista('mensual')" class="bg-gray-200 text-gray-600 px-4 py-2 rounded-r text-xs font-bold hover:bg-gray-300">Mensual</button>
+            </div>
+            <div class="flex items-center gap-4">
+                <label class="text-xs font-bold text-gray-600">Buscar por fecha:</label>
+                <input type="date" onchange="cambiarFecha(this.value)" class="border p-2 rounded text-xs outline-none focus:ring-1 ring-blue-900">
+            </div>
+        </div>
+
+        <div id="calendarioContainer" class="overflow-x-auto rounded-xl shadow-md border border-gray-200 bg-white">
+            </div>
+
+        <div id="bandejaGerencia" class="hidden mt-10 bg-white rounded-xl shadow-md border-t-4 border-blue-900 overflow-hidden no-print">
+            <div class="bg-gray-100 p-3 text-blue-900 text-sm font-bold border-b">PANELES GERENCIA: PENDIENTES DE AUTORIZACIÓN</div>
+            <div id="listaPendientes" class="min-h-[100px] max-h-[400px] overflow-y-auto divide-y">
+                </div>
+        </div>
+
+        <div id="bandejaAsesor" class="hidden mt-10 bg-white rounded-xl shadow-md border-t-4 border-red-600 overflow-hidden no-print">
+            <div class="bg-gray-100 p-3 text-red-900 text-sm font-bold border-b">MIS ENTREGAS RECHAZADAS</div>
+            <div id="listaRechazadas" class="min-h-[100px] max-h-[300px] overflow-y-auto divide-y">
+                </div>
+        </div>
+    </main>
+</div>
+
+<div id="modalRegistro" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
+    <div class="bg-white rounded-2xl p-8 max-w-lg w-full shadow-2xl">
+        <h3 class="font-bold text-xl hyundai-text mb-6 border-b pb-2">Programar Nueva Entrega</h3>
+        <form id="formEntrega" onsubmit="enviarSolicitud(event)" class="grid grid-cols-2 gap-4">
+            
+            <input type="hidden" id="f_fechaStr"> 
+
+            <div class="col-span-1">
+                <label class="text-[10px] uppercase font-bold text-gray-400">Día Seleccionado</label>
+                <input type="text" id="f_dia_display" readonly class="w-full bg-gray-50 p-2 border rounded font-bold text-blue-900 text-sm">
+            </div>
+            <div class="col-span-1">
+                <label class="text-[10px] uppercase font-bold text-gray-400">Horario</label>
+                <input type="text" id="f_hora" readonly class="w-full bg-gray-50 p-2 border rounded font-bold text-blue-900 text-sm">
+            </div>
+            
+            <div class="col-span-2">
+                <label class="text-[10px] uppercase font-bold text-gray-400">Nombre del Cliente</label>
+                <input type="text" id="f_cliente" required class="w-full p-2 border rounded outline-none focus:ring-1 ring-blue-900 uppercase">
+            </div>
+
+            <div class="col-span-1">
+                <label class="text-[10px] uppercase font-bold text-gray-400">Asesor de Ventas</label>
+                <input type="text" id="f_asesor" readonly class="w-full bg-gray-100 p-2 border rounded text-sm font-bold text-gray-600">
+            </div>
+            <div class="col-span-1">
+                <label class="text-[10px] uppercase font-bold text-gray-400">VIN (17 Dígitos)</label>
+                <input type="text" id="f_vin" maxlength="17" required placeholder="ABC123..." class="w-full p-2 border rounded uppercase text-sm focus:ring-1 ring-blue-900">
+            </div>
+
+            <div class="col-span-2 grid grid-cols-3 gap-2">
+                <input type="text" id="f_mod" placeholder="Modelo" required class="p-2 border rounded text-xs uppercase">
+                <input type="text" id="f_ver" placeholder="Versión" required class="p-2 border rounded text-xs uppercase">
+                <input type="number" id="f_age" placeholder="Año" required class="p-2 border rounded text-xs">
+            </div>
+
+            <div class="col-span-1">
+                <label class="text-[10px] uppercase font-bold text-gray-400">Accesorios</label>
+                <select id="f_acc" class="w-full p-2 border rounded text-xs">
+                    <option>No</option><option>Sí</option>
+                </select>
+            </div>
+            <div class="col-span-1">
+                <label class="text-[10px] uppercase font-bold text-gray-400">Ubicación</label>
+                <select id="f_ubi" class="w-full p-2 border rounded text-xs">
+                    <option>Coatza</option><option>Allocation</option><option>Villahermosa</option><option>Traslado</option>
+                </select>
+            </div>
+
+            <div class="col-span-2 flex justify-end gap-3 mt-6">
+                <button type="button" onclick="document.getElementById('modalRegistro').classList.add('hidden')" class="px-6 py-2 rounded-lg text-gray-500 font-bold hover:bg-gray-100">Cancelar</button>
+                <button type="submit" class="hyundai-blue text-white px-8 py-2 rounded-lg font-bold shadow-lg hover:bg-blue-800">Solicitar Entrega</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+</body>
+</html>
