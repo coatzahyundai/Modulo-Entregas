@@ -1,475 +1,540 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <title>HYUNDAI COATZACOALCOS | Sistema de Entregas</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <style>
-        .hyundai-blue { background-color: #002C5F; }
-        .hyundai-text { color: #002C5F; }
-        .status-apartado { background-color: #E5E7EB !important; border-left: 4px solid #9CA3AF; cursor: pointer; }
-        .status-autorizado { background-color: #DCFCE7 !important; border-left: 4px solid #166534; cursor: pointer; }
-        .status-rechazado { background-color: #FEE2E2 !important; color: #991B1B; }
-        
-        /* Ajuste para que al imprimir se vea bien la tabla */
-        @media print {
-            body { background-color: white !important; }
-            .no-print { display: none !important; }
-            table { font-size: 10px !important; }
-        }
-    </style>
+  <meta charset="UTF-8">
+  <title>HYUNDAI COATZACOALCOS | Control de Entregas</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <style>
+    .hyundai-blue { background-color: #002C5F; }
+    .hyundai-text { color: #002C5F; }
+    .status-autorizado { background-color: #dcfce7 !important; border-left: 4px solid #16a34a; }
+    .status-apartado { background-color: #f3f4f6 !important; border-left: 4px solid #9ca3af; }
+    .text-xxs { font-size: 0.65rem; }
+    @media print { 
+        .no-print { display: none !important; } 
+        body { background-color: white !important; }
+    }
+  </style>
 </head>
-<body class="bg-slate-100">
+<body class="bg-slate-100 text-sm">
 
 <script>
-    // ⚠️ REEMPLAZA ESTO CON TU URL DE APPS SCRIPT QUE YA FUNCIONA
-    const API_URL = "https://script.google.com/macros/s/AKfycbwF3MjSgV8lPuEscTTkm5EAApUgXZvtVAt7nbPzAeH0SzU1AOCROcGp3OrS84Y7LtYE/exec"; 
+  // URL DEL SCRIPT
+  const API_URL = "https://script.google.com/macros/s/AKfycbw6QNhcp4kVkI5YcM-dVdqbffFtSMD-hU9TkPKbKN1GX9E1tehglEB9P9lE-hEpJlDo/exec";
+  
+  let SESION = {};
+  let DATA = [];
+  let offsetSemanas = 0; 
+  let viewActual = 'semanal';
+
+  // --- EXTRACTOR ULTRA ROBUSTO DE DATOS ---
+  function extract(obj, targetKey) {
+    if (!obj) return "";
+    let keys = Object.keys(obj);
     
-    let SESION = { nombre: "", nivel: "" };
-    let ENTREGAS_DATA = [];
-    let FECHA_ACTUAL = new Date();
-    let VISTA = 'semanal'; 
-
-    // --- FUNCIONES DE LIMPIEZA DE DATOS ---
-    function normalizarFecha(val) {
-        if (!val) return "";
-        let str = String(val);
-        if (str.match(/^\d{2}\/\d{2}\/\d{4}$/)) return str;
-        if (str.includes('T')) {
-            let partes = str.split('T')[0].split('-');
-            if (partes.length === 3) return `${partes[2]}/${partes[1]}/${partes[0]}`;
-        }
-        let d = new Date(str);
-        if (!isNaN(d.getTime())) {
-            return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth()+1).toString().padStart(2, '0')}/${d.getFullYear()}`;
-        }
-        return str;
+    for (let k of keys) {
+      if (k.toLowerCase() === targetKey.toLowerCase()) return obj[k];
     }
-
-    // --- 1. AUTENTICACIÓN POR PIN Y ROL ---
-    async function login() {
-        const roll = document.getElementById('rollInp').value;
-        const pin = document.getElementById('pinInp').value;
-
-        if(!roll || !pin) {
-            return Swal.fire('Atención', 'Por favor selecciona un rol e ingresa tu PIN', 'warning');
-        }
-
-        Swal.fire({ title: 'Validando...', didOpen: () => Swal.showLoading() });
-
-        try {
-            const resp = await fetch(API_URL, {
-                method: 'POST',
-                body: JSON.stringify({ action: 'login', roll: roll, pin: pin })
-            });
-            const data = await resp.json();
-            
-            if(data.status === 'success') {
-                SESION = data;
-                document.getElementById('loginBox').classList.add('hidden');
-                document.getElementById('app').classList.remove('hidden');
-                document.getElementById('displayUser').innerText = `${SESION.nombre} | Perfil: ${SESION.nivel}`;
-                await refrescarTodo();
-            } else {
-                Swal.fire('Error', 'PIN o Rol incorrectos', 'error');
-            }
-        } catch(e) {
-            Swal.fire('Error', 'No se pudo conectar con la base de datos', 'error');
-        }
+    
+    let targetNorm = targetKey.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    for (let k of keys) {
+      let kNorm = String(k).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+      if (kNorm === targetNorm || kNorm.includes(targetNorm)) return obj[k];
     }
+    
+    if (targetNorm === 'auto' && obj['Auto_Completo']) return obj['Auto_Completo'];
+    return "";
+  }
 
-    // --- 2. SINCRONIZACIÓN Y LECTURA ---
-    async function refrescarTodo() {
-        try {
-            const resp = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ action: 'read' }) });
-            let rawData = await resp.json();
-            
-            ENTREGAS_DATA = rawData.map(e => ({
-                ...e,
-                FechaLimpia: normalizarFecha(e.Fecha)
-            }));
-
-            renderVista();
-            renderBandejas();
-            Swal.close();
-        } catch(e) { 
-            console.log("Error al leer datos"); 
-            Swal.close();
-        }
+  // --- NORMALIZADOR DE FECHAS ---
+  function normalizarFecha(fecha) {
+    if (!fecha) return '';
+    let fStr = String(fecha).trim();
+    if (fStr.includes('T')) {
+        let [yyyy, mm, dd] = fStr.split('T')[0].split('-');
+        return `${dd}/${mm}/${yyyy}`;
     }
-
-    // --- 3. CONTROLES DE VISTA Y FECHAS ---
-    function cambiarVista(tipo) {
-        VISTA = tipo;
-        document.getElementById('btnSemanal').className = tipo === 'semanal' ? 'bg-blue-900 text-white px-4 py-2 rounded-l text-xs font-bold no-print' : 'bg-gray-200 text-gray-600 px-4 py-2 rounded-l text-xs font-bold hover:bg-gray-300 no-print';
-        document.getElementById('btnMensual').className = tipo === 'mensual' ? 'bg-blue-900 text-white px-4 py-2 rounded-r text-xs font-bold no-print' : 'bg-gray-200 text-gray-600 px-4 py-2 rounded-r text-xs font-bold hover:bg-gray-300 no-print';
-        renderVista();
+    if (fStr.includes('-')) {
+        let partes = fStr.split('-');
+        if (partes[0].length === 4) return `${partes[2]}/${partes[1]}/${partes[0]}`;
     }
+    return fStr; 
+  }
 
-    function cambiarFecha(val) {
-        if(!val) return;
-        const partes = val.split('-');
-        FECHA_ACTUAL = new Date(partes[0], partes[1]-1, partes[2]);
-        renderVista();
-    }
+  function formatDDMMAA(fechaStr) {
+    let norm = normalizarFecha(fechaStr);
+    if (!norm.includes('/')) return norm;
+    let p = norm.split('/');
+    return `${p[0].padStart(2,'0')}-${p[1].padStart(2,'0')}-${p[2].substring(2)}`;
+  }
 
-    function formatearFecha(d) {
-        return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth()+1).toString().padStart(2, '0')}/${d.getFullYear()}`;
-    }
+  function parseDateTime(dStrNorm, hStr) {
+    if(!dStrNorm || !dStrNorm.includes('/')) return 0;
+    const p = dStrNorm.split('/');
+    let t = String(hStr||'').trim().toUpperCase();
+    let timeParts = t.split(' ');
+    if(timeParts.length < 2) return 0;
+    let [hours, minutes] = timeParts[0].split(':');
+    let modifier = timeParts[1];
+    
+    hours = parseInt(hours, 10) || 0;
+    minutes = parseInt(minutes, 10) || 0;
+    if (hours === 12 && modifier !== 'PM') hours = 0; 
+    if (hours < 12 && modifier === 'PM') hours += 12; 
+    
+    return new Date(p[2], p[1]-1, p[0], hours, minutes).getTime();
+  }
 
-    // --- 4. RENDERIZADO DEL CALENDARIO / LISTA ---
-    function renderVista() {
-        const container = document.getElementById('calendarioContainer');
-        if(VISTA === 'mensual') renderVistaMensual(container);
-        else renderVistaSemanal(container);
-    }
+  // --- REGLA DE FECHAS (2 Días) ---
+  function validarFecha(fechaStr) {
+    let partes = fechaStr.split('/');
+    let target = new Date(partes[2], partes[1]-1, partes[0]);
+    target.setHours(0,0,0,0);
+    let hoy = new Date();
+    hoy.setHours(0,0,0,0);
+    let diaHoy = hoy.getDay(); 
+    let gap = 2; 
+    if (diaHoy >= 4 && diaHoy <= 6) gap = 4; 
+    if (diaHoy === 0) gap = 3; 
+    let minDate = new Date(hoy);
+    minDate.setDate(hoy.getDate() + gap);
+    return target >= minDate;
+  }
 
-    function renderVistaSemanal(container) {
-        const dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-        const horas = ['11:00 AM', '01:00 PM', '03:00 PM', '05:00 PM', '07:00 PM'];
+  function getFechaEncabezado() {
+    const meses = ['ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC'];
+    let d = new Date();
+    return `${d.getDate()} ${meses[d.getMonth()]} ${d.getFullYear()}`;
+  }
+
+  // --- LOGIN ---
+  async function login() {
+    const pin = document.getElementById('pin').value;
+    if(!pin) return;
+    
+    Swal.fire({ title: 'Identificando...', didOpen: () => Swal.showLoading() });
+    try {
+      const res = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ action: 'login', pin: pin }) });
+      const r = await res.json();
+
+      if(r.status === 'success') {
+        SESION = r;
+        document.getElementById('login').classList.add('hidden');
+        document.getElementById('app').classList.remove('hidden');
+        document.getElementById('fechaActualDisplay').innerText = getFechaEncabezado();
+        document.getElementById('userTxt').innerText = `${SESION.nombre.toUpperCase()} | ${SESION.nivel.toUpperCase()}`;
         
-        let lunes = new Date(FECHA_ACTUAL);
-        let diaSemana = lunes.getDay();
-        let diferencia = lunes.getDate() - diaSemana + (diaSemana === 0 ? -6 : 1);
-        lunes.setDate(diferencia);
+        await toggleView('semanal');
+        setInterval(refrescarSilencioso, 15000); 
+        Swal.close();
+      } else {
+        Swal.fire('Error', 'PIN incorrecto o no registrado', 'error');
+      }
+    } catch(e) { Swal.fire('Error', 'Falla de conexión', 'error'); }
+  }
 
-        let html = `<table class="w-full border-collapse bg-white text-center text-sm table-fixed">
-            <thead class="hyundai-blue text-white"><tr><th class="p-2 border w-24">Horario</th>`;
-        
-        let fechasSemana = [];
-        dias.forEach((d, i) => {
-            let f = new Date(lunes);
-            f.setDate(lunes.getDate() + i);
-            let fStr = formatearFecha(f);
-            fechasSemana.push({ nombre: d, fechaStr: fStr });
-            html += `<th class="p-2 border w-40">${d}<br><span class="text-[10px] font-light">${fStr}</span></th>`;
-        });
-        html += `</tr></thead><tbody>`;
+  function logout() { location.reload(); }
 
-        horas.forEach(h => {
-            html += `<tr><td class="p-2 border font-bold bg-gray-50 text-xs align-middle">${h}</td>`;
-            fechasSemana.forEach(diaObj => {
-                if(diaObj.nombre === 'Sábado' && (h !== '11:00 AM' && h !== '01:00 PM')) {
-                    html += `<td class="border bg-gray-200"></td>`;
-                } else {
-                    let ocupado = ENTREGAS_DATA.find(e => (e.FechaLimpia === diaObj.fechaStr || e.FechaLimpia === diaObj.nombre) && e.Hora === h && e.Estado !== 'Rechazado');
-                    
-                    if(ocupado) {
-                        let esAutorizado = ocupado.Estado === 'Autorizado';
-                        let clase = esAutorizado ? 'status-autorizado' : 'status-apartado';
-                        let tituloHeader = esAutorizado ? '✅ AUTORIZADO' : '⏳ EN REVISIÓN';
-                        let colorHeader = esAutorizado ? 'text-green-800' : 'text-gray-600';
-                        
-                        let textoHTML = `
-                            <div class="text-[9px] leading-[1.3] text-left p-1 text-gray-800 h-full">
-                                <div class="font-bold mb-1 ${colorHeader}">${tituloHeader}</div>
-                                <div class="truncate"><b>CLI:</b> ${ocupado.Cliente}</div>
-                                <div class="truncate"><b>ASE:</b> ${ocupado.Asesor}</div>
-                                <div class="truncate"><b>AUT:</b> ${ocupado.Auto_Completo}</div>
-                                <div class="truncate"><b>VIN:</b> ${ocupado.VIN}</div>
-                                <div class="truncate"><b>ACC:</b> ${ocupado.Accesorios} | <b>UBI:</b> ${ocupado.Ubicacion}</div>
-                            </div>`;
+  // --- ACTUALIZACIÓN DE DATOS ---
+  async function refrescarSilencioso() {
+    try {
+      const res = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ action: 'read' }) });
+      DATA = await res.json();
+      actualizarUI();
+    } catch (e) {}
+  }
 
-                        html += `<td class="border align-top hover:bg-gray-50 transition ${clase}" 
-                                    onclick="clickCelda('${diaObj.fechaStr}', '${h}', '${diaObj.nombre}')">
-                                    ${textoHTML}
-                                 </td>`;
-                    } else {
-                        html += `<td class="border p-2 align-middle hover:bg-blue-50 transition cursor-pointer text-gray-300 hover:text-gray-500" 
-                                    onclick="clickCelda('${diaObj.fechaStr}', '${h}', '${diaObj.nombre}')">
-                                    Disponible
-                                 </td>`;
-                    }
-                }
-            });
-            html += `</tr>`;
-        });
-        container.innerHTML = html + `</tbody></table>`;
+  async function refrescarDatos() {
+    Swal.fire({ title: 'Cargando Horarios...', didOpen: () => Swal.showLoading() });
+    await refrescarSilencioso();
+    Swal.close();
+  }
+
+  function cambiarSemana(dir) {
+    offsetSemanas += dir;
+    let label = offsetSemanas === 0 ? "Semana Actual" : (offsetSemanas > 0 ? `+${offsetSemanas} Semana(s)` : `${offsetSemanas} Semana(s)`);
+    document.getElementById('semanaDisplay').innerText = label;
+    if (viewActual === 'semanal') dibujarGrid(); 
+  }
+
+  async function toggleView(viewName) {
+    viewActual = viewName;
+    const btnSeman = document.getElementById('btnSemanal');
+    const btnMensu = document.getElementById('btnMensual');
+    const navSeman = document.getElementById('navegacionSemanal');
+    const boxGrid = document.getElementById('gridSemanal');
+    const boxMensu = document.getElementById('reporteMensualBox');
+
+    if (viewName === 'semanal') {
+      btnSeman.classList.add('bg-blue-900', 'text-white');
+      btnSeman.classList.remove('bg-gray-100', 'text-gray-500');
+      btnMensu.classList.add('bg-gray-100', 'text-gray-500');
+      btnMensu.classList.remove('bg-blue-900', 'text-white');
+      navSeman.classList.remove('hidden');
+      boxGrid.classList.remove('hidden');
+      boxMensu.classList.add('hidden');
+    } else if (viewName === 'mensual') {
+      btnMensu.classList.add('bg-blue-900', 'text-white');
+      btnMensu.classList.remove('bg-gray-100', 'text-gray-500');
+      btnSeman.classList.add('bg-gray-100', 'text-gray-500');
+      btnSeman.classList.remove('bg-blue-900', 'text-white');
+      navSeman.classList.add('hidden');
+      boxGrid.classList.add('hidden');
+      boxMensu.classList.remove('hidden');
     }
+    await refrescarDatos();
+  }
 
-    function renderVistaMensual(container) {
-        let mesActual = FECHA_ACTUAL.getMonth() + 1;
-        let anioActual = FECHA_ACTUAL.getFullYear();
-        
-        let filtrados = ENTREGAS_DATA.filter(e => {
-            if(!e.FechaLimpia.includes('/')) return false;
-            let partes = e.FechaLimpia.split('/');
-            return parseInt(partes[1]) === mesActual && parseInt(partes[2]) === anioActual && e.Estado !== 'Rechazado';
+  function actualizarUI() {
+    if (viewActual === 'semanal') { dibujarGrid(); } 
+    else if (viewActual === 'mensual') { dibujarMensual(); }
+    renderRechazados();
+    if(SESION.nivel.toLowerCase().includes('geren')) renderGerencia();
+  }
+
+  // --- DIBUJAR CALENDARIO SEMANAL ---
+  function dibujarGrid() {
+    const horas = ['11:00 AM', '01:00 PM', '03:00 PM', '05:00 PM', '07:00 PM'];
+    
+    let hoy = new Date();
+    let diaSemana = hoy.getDay();
+    let diff = diaSemana === 0 ? -6 : 1 - diaSemana; 
+    let lunes = new Date(hoy);
+    lunes.setDate(hoy.getDate() + diff + (offsetSemanas * 7));
+
+    const diasObj = [];
+    ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'].forEach((d, i) => {
+      let f = new Date(lunes); f.setDate(lunes.getDate() + i);
+      let fStr = `${f.getDate().toString().padStart(2,'0')}/${(f.getMonth()+1).toString().padStart(2,'0')}/${f.getFullYear()}`;
+      diasObj.push({ dia: d, fStr: fStr, obj: f });
+    });
+
+    let html = `<table class="w-full border-collapse bg-white table-fixed shadow-sm rounded">
+      <tr class="hyundai-blue text-white text-[11px]">
+        <th class="p-3 border w-24">HORA</th>${diasObj.map(d => `<th class="p-2 border leading-tight uppercase tracking-wider">${d.dia}<br><span class="font-normal opacity-75 text-[10px]">${d.fStr}</span></th>`).join('')}
+      </tr>`;
+
+    horas.forEach(h => {
+      html += `<tr><td class="p-2 border font-bold text-[10px] bg-slate-50 text-center text-gray-600">${h}</td>`;
+      
+      diasObj.forEach(d => {
+        let ent = DATA.find(e => {
+          if (extract(e, 'estado') === 'Rechazado') return false;
+          let eFechaNorm = normalizarFecha(extract(e, 'fecha'));
+          let eHoraNorm = String(extract(e, 'hora') || '').trim().toUpperCase().replace(/\s/g, '');
+          let hNorm = h.replace(/\s/g, '');
+          return (eFechaNorm === d.fStr) && (eHoraNorm === hNorm);
         });
 
-        let html = `<div class="p-4 bg-white"><h3 class="font-bold mb-4 hyundai-text">Todas las entregas del mes</h3>
-                    <table class="w-full text-left text-xs border">
-                    <thead class="bg-gray-100 border-b hyundai-text">
-                        <tr>
-                            <th class="p-2">Fecha/Hora</th><th class="p-2">Cliente</th><th class="p-2">Asesor</th>
-                            <th class="p-2">Auto</th><th class="p-2">VIN</th><th class="p-2">Accesorios</th>
-                            <th class="p-2">Ubicación</th><th class="p-2">Estado</th>
-                        </tr>
-                    </thead><tbody>`;
-        
-        if(filtrados.length === 0) html += `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay entregas programadas este mes.</td></tr>`;
-
-        filtrados.forEach(e => {
-            let color = e.Estado === 'Autorizado' ? 'text-green-600 font-bold' : 'text-gray-600 font-bold';
-            html += `<tr class="border-b hover:bg-gray-50">
-                <td class="p-2 whitespace-nowrap">${e.FechaLimpia} - ${e.Hora}</td>
-                <td class="p-2 font-bold">${e.Cliente}</td>
-                <td class="p-2">${e.Asesor}</td>
-                <td class="p-2">${e.Auto_Completo}</td>
-                <td class="p-2 uppercase">${e.VIN}</td>
-                <td class="p-2">${e.Accesorios}</td>
-                <td class="p-2">${e.Ubicacion}</td>
-                <td class="p-2 ${color}">${e.Estado}</td>
-            </tr>`;
-        });
-        container.innerHTML = html + `</tbody></table></div>`;
-    }
-
-    // --- 5. INTERACCIÓN (CLICS Y FORMULARIOS) ---
-    function clickCelda(fechaStr, hora, nombreDia) {
-        let ocupado = ENTREGAS_DATA.find(e => (e.FechaLimpia === fechaStr || e.FechaLimpia === nombreDia) && e.Hora === hora && e.Estado !== 'Rechazado');
-        const esGerente = SESION.nivel.toLowerCase().includes('geren');
-
-        if (ocupado) {
-            let infoHTML = `<div class="text-left text-sm bg-gray-50 p-4 rounded border mt-2">
-                            <p class="mb-2"><b class="text-blue-900">Cliente:</b> ${ocupado.Cliente}</p>
-                            <p class="mb-2"><b class="text-blue-900">Asesor:</b> ${ocupado.Asesor}</p>
-                            <p class="mb-2"><b class="text-blue-900">Auto:</b> ${ocupado.Auto_Completo}</p>
-                            <p class="mb-2"><b class="text-blue-900">VIN:</b> ${ocupado.VIN}</p>
-                            <p class="mb-2"><b class="text-blue-900">Accesorios:</b> ${ocupado.Accesorios}</p>
-                            <p class="mb-2"><b class="text-blue-900">Ubicación:</b> ${ocupado.Ubicacion}</p>
-                        </div>`;
-
-            if (ocupado.Estado === 'Apartado' && esGerente) {
-                Swal.fire({
-                    title: 'Autorizar Entrega',
-                    html: infoHTML,
-                    showDenyButton: true,
-                    showCancelButton: true,
-                    confirmButtonText: '✅ Autorizar',
-                    denyButtonText: '❌ Rechazar',
-                    cancelButtonText: 'Cerrar',
-                    width: '32em'
-                }).then((result) => {
-                    if(result.isConfirmed) gestionar(ocupado.ID_Entrega, 'autorizar');
-                    else if(result.isDenied) gestionar(ocupado.ID_Entrega, 'rechazar');
-                });
-            } else {
-                Swal.fire({ title: 'Detalles de Entrega', html: infoHTML, confirmButtonText: 'Entendido' });
-            }
+        if(ent) {
+          let cl = extract(ent, 'estado') === 'Autorizado' ? 'status-autorizado' : 'status-apartado';
+          let id = ent[Object.keys(ent)[0]]; 
+          let cliente = extract(ent, 'cliente') || 'SIN NOMBRE';
+          let asesor = extract(ent, 'asesor') || 'SIN ASESOR';
+          let autoName = extract(ent, 'auto') || 'Auto';
+          let ubi = extract(ent, 'ubicacion') || 'NO ESPECIFICADA';
+          let acc = extract(ent, 'accesorios') || 'NO';
+          let vin = extract(ent, 'vin') || 'S/V';
+          
+          html += `<td class="border p-2 ${cl} cursor-pointer hover:opacity-80 transition" onclick="ver('${id}')">
+            <div class="text-[9px] leading-tight space-y-[2px]">
+                <div><span class="text-gray-500 font-bold">CLIENTE:</span> <span class="font-bold text-gray-800 uppercase">${cliente}</span></div>
+                <div><span class="text-gray-500 font-bold">ASESOR:</span> <span class="text-gray-800 uppercase">${asesor}</span></div>
+                <div><span class="text-gray-500 font-bold">AUTO:</span> <span class="text-gray-800 uppercase">${autoName}</span></div>
+                <div><span class="text-gray-500 font-bold">VIN:</span> <span class="text-gray-800 font-mono uppercase tracking-wider">${vin}</span></div>
+                <div><span class="text-gray-500 font-bold">ACCESORIOS:</span> <span class="text-gray-800 uppercase">${acc}</span></div>
+                <div><span class="text-gray-500 font-bold">UBICACIÓN:</span> <span class="text-gray-800 uppercase">${ubi}</span></div>
+            </div></td>`;
         } else {
-            abrirForm(fechaStr, hora, nombreDia);
+          html += `<td class="border p-3 text-gray-300 text-[10px] cursor-pointer hover:bg-blue-50 text-center transition uppercase font-bold" onclick="clickVacio('${d.fStr}', '${h}', '${d.dia}')">Disponible</td>`;
         }
+      });
+      html += `</tr>`;
+    });
+    document.getElementById('gridSemanal').innerHTML = html + `</table>`;
+  }
+
+  // --- DIBUJAR REPORTE MENSUAL ---
+  function dibujarMensual() {
+    const contenedor = document.getElementById('reporteMensualBox');
+    let hoy = new Date();
+    let anioActual = hoy.getFullYear();
+    let mesActual = hoy.getMonth(); 
+
+    let html = `<div class="bg-gray-50 p-4 border-b"><h2 class="font-bold text-gray-700 uppercase tracking-widest text-xs">Todas las entregas del mes</h2></div>
+    <table class="w-full border-collapse bg-white table-fixed shadow-sm rounded">
+      <tr class="hyundai-blue text-white text-[11px]">
+        <th class="p-3 border">Fecha/Hora</th><th class="p-3 border">Cliente</th><th class="p-3 border">Asesor</th>
+        <th class="p-3 border">Auto</th><th class="p-3 border">VIN</th><th class="p-3 border">Accesorios</th>
+        <th class="p-3 border">Ubicación</th><th class="p-3 border">Estado</th>
+      </tr>`;
+
+    let entMonth = DATA.filter(e => {
+      if (extract(e, 'estado') === 'Rechazado') return false;
+      let d = normalizarFecha(extract(e, 'fecha'));
+      if(!d.includes('/')) return false;
+      let p = d.split('/');
+      return parseInt(p[2]) === anioActual && (parseInt(p[1]) - 1) === mesActual;
+    });
+    
+    entMonth.sort((a,b) => parseDateTime(normalizarFecha(extract(a, 'fecha')), extract(a, 'hora')) - parseDateTime(normalizarFecha(extract(b, 'fecha')), extract(b, 'hora')));
+
+    if(entMonth.length === 0) {
+      html += `<tr><td colspan="8" class="p-6 text-center text-gray-400 italic text-xs">No hay entregas registradas para este mes</td></tr>`;
+    } else {
+      entMonth.forEach(e => {
+        let cl = extract(e, 'estado') === 'Autorizado' ? 'status-autorizado' : 'status-apartado';
+        let ubi = extract(e, 'ubicacion') || 'NO ESPECIFICADA';
+        
+        html += `<tr class="hover:bg-gray-50 transition">
+            <td class="p-2 border text-[10px] text-gray-600 font-bold">${normalizarFecha(extract(e, 'fecha'))} @ ${extract(e, 'hora')}</td>
+            <td class="p-2 border text-[10px] text-gray-800 font-bold truncate uppercase">${extract(e, 'cliente')}</td>
+            <td class="p-2 border text-[10px] text-gray-600 uppercase">${extract(e, 'asesor')}</td>
+            <td class="p-2 border text-[10px] text-gray-600 truncate uppercase">${extract(e, 'auto')}</td>
+            <td class="p-2 border text-[10px] text-gray-600 font-mono tracking-wider uppercase">${extract(e, 'vin')}</td>
+            <td class="p-2 border text-[10px] text-gray-600 text-center uppercase">${extract(e, 'accesorios') || 'NO'}</td>
+            <td class="p-2 border text-[10px] text-gray-600 text-center uppercase">${ubi}</td>
+            <td class="p-2 border ${cl} text-[10px] font-bold uppercase">${extract(e, 'estado')}</td>
+        </tr>`;
+      });
+    }
+    contenedor.innerHTML = html + `</table>`;
+  }
+
+  function clickVacio(fStr, h, nombreDia) {
+    let esGerente = SESION.nivel.toLowerCase().includes('geren');
+    if (!esGerente && !validarFecha(fStr)) {
+      Swal.fire('Restricción de Tiempo', 'Por regla operativa, debes programar con anticipación.', 'warning');
+      return;
+    }
+    document.getElementById('f_fechaStr').value = fStr;
+    document.getElementById('f_dia_display').value = `${nombreDia} (${fStr})`;
+    document.getElementById('f_hora').value = h;
+    document.getElementById('f_asesor').value = SESION.nombre;
+    document.getElementById('modalRegistro').classList.remove('hidden');
+  }
+
+  function ver(id) {
+    let e = DATA.find(x => x[Object.keys(x)[0]] == id);
+    if(!e) return;
+    
+    let cliente = extract(e, 'cliente') || 'SIN NOMBRE';
+    let asesor = extract(e, 'asesor') || 'SIN ASESOR';
+    let autoName = extract(e, 'auto') || 'Auto';
+    let ubi = extract(e, 'ubicacion') || 'NO ESPECIFICADA';
+    let acc = extract(e, 'accesorios') || 'NO';
+    let vin = extract(e, 'vin') || 'S/V';
+    let estado = extract(e, 'estado');
+
+    let htmlBody = `<div class='text-sm text-left mb-4 p-4 bg-slate-50 rounded-lg border'>
+        <p class="mb-1"><b class="text-gray-500">CLIENTE:</b> <span class="uppercase">${cliente}</span></p>
+        <p class="mb-1"><b class="text-gray-500">ASESOR:</b> <span class="uppercase">${asesor}</span></p>
+        <p class="mb-1"><b class="text-gray-500">AUTO:</b> <span class="uppercase">${autoName}</span></p>
+        <p class="mb-1"><b class="text-gray-500">VIN:</b> <span class="font-mono uppercase">${vin}</span></p>
+        <p class="mb-1"><b class="text-gray-500">UBICACIÓN:</b> <span class="uppercase">${ubi}</span></p>
+        <p class="mb-1"><b class="text-gray-500">ACCESORIOS:</b> <span class="uppercase">${acc}</span></p>
+        <p class="mb-1"><b class="text-gray-500">ESTADO:</b> <span class="${estado==='Autorizado'?'text-green-600':'text-gray-600'} font-bold uppercase">${estado}</span></p>
+    </div>`;
+
+    let isOwner = SESION.nombre === asesor;
+    let isGerente = SESION.nivel.toLowerCase().includes('geren');
+
+    if (isOwner || isGerente) {
+      // CAMBIO: Si es gerente el que elimina, o si la cita ya estaba Autorizada, la orden será "Rechazar" para que se vaya a la bandeja del asesor.
+      const actionType = (estado === 'Autorizado' || isGerente) ? 'rechazar' : 'eliminar';
+      htmlBody += `<button onclick="confirmarEliminar('${id}', '${actionType}')" class="bg-red-600 hover:bg-red-700 text-white px-4 py-3 rounded-lg w-full font-bold shadow-md transition uppercase text-xs">Eliminar Cita</button>`;
     }
 
-    function abrirForm(fechaStr, hora, nombreDia) {
-        document.getElementById('f_fechaStr').value = fechaStr; 
-        document.getElementById('f_dia_display').value = `${nombreDia} (${fechaStr})`;
-        document.getElementById('f_hora').value = hora;
-        document.getElementById('f_asesor').value = SESION.nombre;
-        document.getElementById('modalRegistro').classList.remove('hidden');
-    }
+    Swal.fire({ title: 'Detalle de Programación', html: htmlBody, showConfirmButton: false, showCloseButton: true });
+  }
 
-    async function enviarSolicitud(e) {
-        e.preventDefault();
-        const vin = document.getElementById('f_vin').value;
-        if(vin.length !== 17) return Swal.fire('VIN Inválido', 'Debe tener exactamente 17 caracteres alfanuméricos', 'warning');
+  function confirmarEliminar(id, actionType) {
+      Swal.fire({
+          title: '¿Eliminar cita?',
+          text: actionType === 'rechazar' ? "La cita pasará a la sección de Canceladas/Rechazadas del asesor." : "Si necesitas reprogramar, elimina esta cita y selecciona un nuevo horario.",
+          icon: 'warning',
+          showCancelButton: true,
+          confirmButtonColor: '#d33',
+          cancelButtonColor: '#9ca3af',
+          confirmButtonText: 'Sí, eliminar'
+      }).then((result) => {
+          if (result.isConfirmed) { accion(id, actionType); }
+      });
+  }
 
-        const payload = {
-            action: 'crear',
-            fecha: document.getElementById('f_fechaStr').value, 
-            hora: document.getElementById('f_hora').value,
-            cliente: document.getElementById('f_cliente').value.toUpperCase(),
-            asesor: SESION.nombre,
-            auto: `${document.getElementById('f_mod').value} ${document.getElementById('f_ver').value} ${document.getElementById('f_age').value}`.toUpperCase(),
-            vin: vin.toUpperCase(),
-            accesorios: document.getElementById('f_acc').value,
-            ubicacion: document.getElementById('f_ubi').value
-        };
+  async function accion(id, a) {
+    Swal.fire({ title: 'Procesando...', didOpen: () => Swal.showLoading() });
+    await fetch(API_URL, { method: 'POST', body: JSON.stringify({ action: a, id: id }) });
+    await refrescarDatos();
+    Swal.fire('Listo', 'Actualizado correctamente', 'success');
+  }
 
-        Swal.fire({ title: 'Registrando...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
-        
-        await fetch(API_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
-        
-        document.getElementById('formEntrega').reset();
-        document.getElementById('modalRegistro').classList.add('hidden');
-        
-        Swal.fire({ title: 'Éxito', text: 'Solicitud enviada a gerencia', icon: 'success', timer: 1500 });
-        setTimeout(refrescarTodo, 1500); 
-    }
+  async function enviarSolicitud(e) {
+    e.preventDefault();
+    Swal.fire({ title: 'Programando...', didOpen: () => Swal.showLoading() });
+    const payload = {
+        action: 'crear',
+        fecha: document.getElementById('f_fechaStr').value,
+        hora: document.getElementById('f_hora').value,
+        cliente: document.getElementById('f_cliente').value.toUpperCase(),
+        asesor: SESION.nombre,
+        auto: `${document.getElementById('f_mod').value} ${document.getElementById('f_ver').value} ${document.getElementById('f_age').value}`.toUpperCase(),
+        vin: document.getElementById('f_vin').value.toUpperCase(),
+        accesorios: document.getElementById('f_acc').value,
+        ubicacion: document.getElementById('f_ubi').value
+    };
+    await fetch(API_URL, { method: 'POST', body: JSON.stringify(payload) });
+    document.getElementById('modalRegistro').classList.add('hidden');
+    document.getElementById('formEntrega').reset();
+    await refrescarDatos();
+    Swal.fire({ title: 'Apartado Exitoso', icon: 'success', timer: 1500, showConfirmButton: false });
+  }
 
-    // --- 6. BANDEJAS INFERIORES ---
-    function renderBandejas() {
-        const esGerente = SESION.nivel.toLowerCase().includes('geren');
-        
-        if (esGerente) {
-            document.getElementById('bandejaGerencia').classList.remove('hidden');
-            const listaP = document.getElementById('listaPendientes');
-            listaP.innerHTML = "";
-            const pendientes = ENTREGAS_DATA.filter(e => e.Estado === 'Apartado');
-            
-            if(pendientes.length === 0) listaP.innerHTML = "<p class='p-3 text-sm text-gray-500'>No hay entregas pendientes.</p>";
-            
-            pendientes.forEach(p => {
-                listaP.innerHTML += `
-                    <div class="flex justify-between items-center p-3 border-b text-sm bg-white hover:bg-gray-50">
-                        <div class="grid grid-cols-2 gap-4 w-full pr-4">
-                            <div>
-                                <b class="text-blue-900">${p.Cliente}</b><br>
-                                <span class="text-xs text-gray-500">🗓️ ${p.FechaLimpia} @ ${p.Hora} | 🧑‍💼 ${p.Asesor}</span>
-                            </div>
-                            <div class="text-xs text-gray-600 border-l pl-4">
-                                <b>🚗 Auto:</b> ${p.Auto_Completo}<br>
-                                <b>🔧 VIN:</b> ${p.VIN}
-                            </div>
-                        </div>
-                        <div class="flex gap-2">
-                            <button onclick="gestionar('${p.ID_Entrega}', 'autorizar')" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded shadow font-bold">Autorizar</button>
-                            <button onclick="gestionar('${p.ID_Entrega}', 'rechazar')" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded shadow font-bold">Rechazar</button>
-                        </div>
-                    </div>`;
-            });
-        } else {
-            document.getElementById('bandejaAsesor').classList.remove('hidden');
-            const listaR = document.getElementById('listaRechazadas');
-            listaR.innerHTML = "";
-            const rechazadas = ENTREGAS_DATA.filter(e => e.Estado === 'Rechazado' && e.Asesor === SESION.nombre);
-            
-            if(rechazadas.length === 0) listaR.innerHTML = "<p class='p-3 text-sm text-gray-500'>No tienes entregas rechazadas.</p>";
-            
-            rechazadas.forEach(r => {
-                listaR.innerHTML += `
-                    <div class="p-3 border-b text-xs bg-red-50 text-red-900 flex justify-between items-center">
-                        <div>
-                            <b>❌ Rechazada:</b> ${r.Cliente} (🗓️ ${r.FechaLimpia} @ ${r.Hora})<br>
-                            ${r.Auto_Completo}
-                        </div>
-                    </div>`;
-            });
-        }
-    }
+  // --- ENTREGAS RECHAZADAS ---
+  function renderRechazados() {
+    const contenedor = document.getElementById('rechazadosBox');
+    let esGerente = SESION.nivel.toLowerCase().includes('geren');
+    let rechazados = DATA.filter(e => extract(e, 'estado') === 'Rechazado' && (esGerente || extract(e, 'asesor') === SESION.nombre));
+    
+    if (rechazados.length === 0) { contenedor.classList.add('hidden'); return; }
+    
+    contenedor.classList.remove('hidden');
+    let html = `<div class="bg-red-50 p-3 text-red-900 text-xs font-bold border-b border-red-200 uppercase tracking-widest">Entregas Canceladas / Rechazadas</div><div class="divide-y divide-red-100">`;
+    
+    rechazados.forEach(p => {
+      let id = p[Object.keys(p)[0]];
+      let btnHtml = !esGerente ? `<button onclick="accion('${id}','eliminar')" class="bg-red-100 text-red-700 hover:bg-red-600 hover:text-white border border-red-200 px-4 py-2 rounded shadow-sm font-bold transition">Quitar</button>` : '';
+      
+      let cliente = extract(p, 'cliente') || 'SIN NOMBRE';
+      let asesor = extract(p, 'asesor') || 'SIN ASESOR';
+      let autoName = extract(p, 'auto') || 'Auto';
+      let ubi = extract(p, 'ubicacion') || 'NO ESPECIFICADA';
+      let acc = extract(p, 'accesorios') || 'NO';
+      let vin = extract(p, 'vin') || 'S/V';
 
-    async function gestionar(id, accion) {
-        Swal.fire({ title: 'Procesando...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
-        await fetch(API_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify({ action: accion, id: id }) });
-        
-        Swal.fire({ title: 'Actualizado', text: `Estado guardado exitosamente`, icon: 'success', timer: 1500 });
-        setTimeout(refrescarTodo, 1500); 
-    }
+      html += `<div class="flex justify-between items-center p-4 bg-white hover:bg-red-50 transition">
+        <div class="text-xs">
+            <b class="text-red-700 uppercase text-sm">CLIENTE: ${cliente}</b> <span class="text-gray-500 font-bold ml-2">| ${normalizarFecha(extract(p, 'fecha'))} @ ${extract(p, 'hora')}</span><br>
+            <span class="text-gray-600"><b>AUTO:</b> <span class="uppercase">${autoName}</span> | <b>VIN:</b> <span class="font-mono uppercase">${vin}</span> | <b>ASESOR:</b> <span class="uppercase">${asesor}</span></span><br>
+            <span class="text-gray-500"><b>UBICACIÓN:</b> <span class="uppercase">${ubi}</span> | <b>ACCESORIOS:</b> <span class="uppercase">${acc}</span></span>
+        </div> 
+        ${btnHtml}
+      </div>`;
+    });
+    contenedor.innerHTML = html + `</div>`;
+  }
 
-    function logout() { location.reload(); }
+  // --- GERENCIA (PENDIENTES CON TODOS LOS DATOS) ---
+  function renderGerencia() {
+    const contenedor = document.getElementById('gerenciaBox');
+    const pends = DATA.filter(e => extract(e, 'estado') === 'Apartado');
+    contenedor.classList.remove('hidden');
+    
+    let html = `<div class="bg-blue-50 p-3 text-blue-900 text-xs font-bold border-b border-blue-100 uppercase tracking-widest flex justify-between"><span>Pendientes de Autorización</span><span class="bg-blue-900 text-white px-2 rounded-full">${pends.length}</span></div><div class="divide-y divide-gray-100">`;
+    if(pends.length === 0) html += `<p class="p-6 text-xs text-gray-400 text-center italic">No hay citas pendientes de revisión</p>`;
+    
+    pends.forEach(p => {
+      let id = p[Object.keys(p)[0]];
+      let cliente = extract(p, 'cliente') || 'SIN NOMBRE';
+      let asesor = extract(p, 'asesor') || 'SIN ASESOR';
+      let autoName = extract(p, 'auto') || 'Auto';
+      let ubi = extract(p, 'ubicacion') || 'NO ESPECIFICADA';
+      let acc = extract(p, 'accesorios') || 'NO';
+      let vin = extract(p, 'vin') || 'S/V';
+
+      html += `<div class="flex justify-between items-center p-4 bg-white hover:bg-gray-50 transition">
+        <div class="text-xs">
+            <b class="text-blue-900 text-sm uppercase">CLIENTE: ${cliente}</b><br>
+            <span class="text-gray-500 font-bold">${formatDDMMAA(extract(p, 'fecha'))} | ${extract(p, 'hora')}</span> | <span class="text-blue-900 font-bold uppercase">ASESOR: ${asesor}</span><br>
+            <span class="text-gray-600 uppercase"><b>AUTO:</b> ${autoName}</span> <span class="text-[10px] font-mono text-gray-500 ml-2 uppercase"><b>VIN:</b> ${vin}</span><br>
+            <span class="text-[10px] text-gray-500 italic uppercase"><b>UBICACIÓN:</b> ${ubi} | <b>ACCESORIOS:</b> ${acc}</span>
+        </div> 
+        <div class="flex gap-2 items-center">
+          <button onclick="accion('${id}','autorizar')" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded shadow font-bold transition uppercase text-xs">Autorizar</button>
+          <button onclick="accion('${id}','rechazar')" class="bg-red-100 text-red-700 hover:bg-red-600 hover:text-white px-4 py-2 rounded shadow font-bold transition uppercase border border-red-200 text-xs">Rechazar</button>
+        </div></div>`;
+    });
+    contenedor.innerHTML = html + `</div>`;
+  }
 </script>
 
-<div id="loginBox" class="min-h-screen flex items-center justify-center">
-    <div class="bg-white p-10 rounded-2xl shadow-xl w-96 border-t-8 border-blue-900">
-        <h1 class="text-center font-bold text-xl hyundai-text mb-8">HYUNDAI COATZACOALCOS<br><span class="text-sm font-normal text-gray-400">Portal de Entregas</span></h1>
-        
-        <select id="rollInp" class="w-full border p-3 rounded-lg mb-4 outline-none focus:ring-2 ring-blue-900 text-gray-700">
-            <option value="" disabled selected>Selecciona tu Rol</option>
-            <option value="Asesor">Asesor de Ventas</option>
-            <option value="Gerencia">Gerencia</option>
-        </select>
-        
-        <input id="pinInp" type="password" placeholder="Ingresa tu PIN" class="w-full border p-3 rounded-lg mb-8 outline-none focus:ring-2 ring-blue-900 text-center tracking-[0.5em] text-lg font-bold">
-        
-        <button onclick="login()" class="w-full hyundai-blue text-white py-3 rounded-lg font-bold shadow-lg transition hover:bg-blue-800">INGRESAR</button>
-    </div>
+<div id="login" class="min-h-screen flex items-center justify-center bg-[url('https://www.hyundai.com/content/dam/hyundai/ww/en/images/home/hyundai-worldwide-home-1.jpg')] bg-cover bg-center">
+  <div class="bg-white/95 backdrop-blur p-8 rounded-2xl shadow-2xl w-80 text-center border-t-8 border-blue-900">
+    <h2 class="font-bold mb-6 hyundai-text uppercase tracking-widest text-lg">HYUNDAI<br><span class="text-[10px] text-gray-500 tracking-normal">COATZACOALCOS</span></h2>
+    <input id="pin" type="password" placeholder="PIN DE ACCESO" onkeypress="if(event.key==='Enter') login()" class="w-full border-2 p-3 rounded-xl mb-6 text-center text-xl font-bold focus:border-blue-900 outline-none tracking-[0.2em] bg-slate-50">
+    <button onclick="login()" class="w-full hyundai-blue text-white py-3 rounded-xl font-bold shadow-lg hover:opacity-90 transition tracking-widest">ENTRAR</button>
+  </div>
 </div>
 
 <div id="app" class="hidden min-h-screen flex flex-col">
-    <header class="hyundai-blue p-4 text-white flex justify-between items-center px-8 shadow-md no-print">
-        <div>
-            <h2 class="font-bold tracking-widest uppercase">Hyundai Coatzacoalcos</h2>
-            <p class="text-[10px] opacity-70">Módulo de Programación de Entregas</p>
+  <header class="hyundai-blue text-white p-4 shadow-lg no-print">
+    <div class="max-w-7xl mx-auto flex justify-between items-center w-full">
+        <div class="flex flex-col">
+            <h1 class="font-bold tracking-[0.2em] text-sm uppercase">Sistema de Entregas</h1>
+            <span id="fechaActualDisplay" class="text-[10px] text-gray-300 tracking-widest"></span>
         </div>
         <div class="flex items-center gap-6">
-            <span id="displayUser" class="text-sm font-bold text-yellow-400"></span>
-            <button onclick="logout()" class="bg-red-600 hover:bg-red-700 px-4 py-1 rounded text-xs text-white font-bold">Cerrar Sesión</button>
+            <span id="userTxt" class="font-bold text-xs text-yellow-400 tracking-widest text-right"></span>
+            <button onclick="logout()" class="border border-white/30 hover:bg-red-600 hover:border-red-600 px-4 py-2 rounded text-[10px] font-bold uppercase transition tracking-wider">Cerrar Sesión</button>
         </div>
-    </header>
-
-    <main class="flex-1 p-6 max-w-[1400px] mx-auto w-full">
-        <div class="flex flex-wrap justify-between items-center mb-6 bg-white p-4 rounded-xl shadow-sm border gap-4 no-print">
-            <div class="flex gap-0 shadow-sm rounded">
-                <button id="btnSemanal" onclick="cambiarVista('semanal')" class="bg-blue-900 text-white px-4 py-2 rounded-l text-xs font-bold">Semanal</button>
-                <button id="btnMensual" onclick="cambiarVista('mensual')" class="bg-gray-200 text-gray-600 px-4 py-2 rounded-r text-xs font-bold hover:bg-gray-300">Mensual</button>
-            </div>
-            <div class="flex items-center gap-4">
-                <label class="text-xs font-bold text-gray-600">Buscar por fecha:</label>
-                <input type="date" onchange="cambiarFecha(this.value)" class="border p-2 rounded text-xs outline-none focus:ring-1 ring-blue-900">
-            </div>
+    </div>
+  </header>
+  
+  <div class="p-6 max-w-7xl mx-auto w-full flex-1">
+    <div class="flex justify-between items-center mb-6 bg-white p-3 rounded-xl shadow border border-gray-200 no-print">
+        <div class="flex gap-2">
+            <button id="btnSemanal" onclick="toggleView('semanal')" class="bg-blue-900 text-white px-5 py-2 rounded uppercase text-[10px] font-bold tracking-wider shadow-sm">Semanal</button>
+            <button id="btnMensual" onclick="toggleView('mensual')" class="bg-gray-100 text-gray-500 hover:bg-gray-200 px-5 py-2 rounded uppercase text-[10px] font-bold tracking-wider transition">Mensual</button>
         </div>
-
-        <div id="calendarioContainer" class="overflow-x-auto rounded-xl shadow-md border border-gray-200 bg-white">
-            </div>
-
-        <div id="bandejaGerencia" class="hidden mt-10 bg-white rounded-xl shadow-md border-t-4 border-blue-900 overflow-hidden no-print">
-            <div class="bg-gray-100 p-3 text-blue-900 text-sm font-bold border-b">PANELES GERENCIA: PENDIENTES DE AUTORIZACIÓN</div>
-            <div id="listaPendientes" class="min-h-[100px] max-h-[400px] overflow-y-auto divide-y">
-                </div>
+        <div id="navegacionSemanal" class="flex items-center gap-1 bg-slate-50 p-1 rounded-lg border">
+            <button onclick="cambiarSemana(-1)" class="p-2 px-4 bg-white rounded shadow-sm text-gray-600 hover:bg-blue-50 hover:text-blue-900 font-bold transition">◀</button>
+            <span id="semanaDisplay" class="font-bold text-xs px-6 text-gray-700 uppercase tracking-widest">Semana Actual</span>
+            <button onclick="cambiarSemana(1)" class="p-2 px-4 bg-white rounded shadow-sm text-gray-600 hover:bg-blue-50 hover:text-blue-900 font-bold transition">▶</button>
         </div>
+    </div>
 
-        <div id="bandejaAsesor" class="hidden mt-10 bg-white rounded-xl shadow-md border-t-4 border-red-600 overflow-hidden no-print">
-            <div class="bg-gray-100 p-3 text-red-900 text-sm font-bold border-b">MIS ENTREGAS RECHAZADAS</div>
-            <div id="listaRechazadas" class="min-h-[100px] max-h-[300px] overflow-y-auto divide-y">
-                </div>
-        </div>
-    </main>
+    <div id="gridSemanal" class="shadow-xl rounded-xl overflow-hidden border border-gray-200 bg-white"></div>
+    <div id="reporteMensualBox" class="hidden shadow-xl rounded-xl border border-gray-200 overflow-hidden no-print"></div>
+    <div id="rechazadosBox" class="hidden mt-6 bg-white rounded-xl shadow-lg border border-red-200 overflow-hidden no-print"></div>
+    <div id="gerenciaBox" class="hidden mt-6 bg-white rounded-xl shadow-lg border border-blue-200 overflow-hidden no-print"></div>
+  </div>
 </div>
 
 <div id="modalRegistro" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-    <div class="bg-white rounded-2xl p-8 max-w-lg w-full shadow-2xl">
-        <h3 class="font-bold text-xl hyundai-text mb-6 border-b pb-2">Programar Nueva Entrega</h3>
-        <form id="formEntrega" onsubmit="enviarSolicitud(event)" class="grid grid-cols-2 gap-4">
+    <div class="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
+        <h3 class="font-bold hyundai-text mb-4 border-b pb-3 uppercase tracking-widest text-xs">Agendar Nueva Entrega</h3>
+        <form id="formEntrega" onsubmit="enviarSolicitud(event)" class="grid grid-cols-2 gap-3">
+            <input type="hidden" id="f_fechaStr">
+            <div class="col-span-2"><input type="text" id="f_dia_display" readonly class="w-full bg-slate-50 border border-gray-200 p-2 text-xs font-bold rounded text-gray-600 outline-none"></div>
+            <div class="col-span-1"><input type="text" id="f_hora" readonly class="w-full bg-slate-50 border border-gray-200 p-2 text-xs font-bold rounded text-gray-600 outline-none"></div>
+            <div class="col-span-1"><input type="text" id="f_asesor" readonly class="w-full bg-slate-50 border border-gray-200 p-2 text-xs font-bold rounded text-gray-600 outline-none"></div>
+            <div class="col-span-2"><input type="text" id="f_cliente" placeholder="Nombre Completo del Cliente" required class="w-full p-2 border border-gray-300 rounded text-xs uppercase focus:border-blue-900 outline-none bg-blue-50/30"></div>
             
-            <input type="hidden" id="f_fechaStr"> 
-
-            <div class="col-span-1">
-                <label class="text-[10px] uppercase font-bold text-gray-400">Día Seleccionado</label>
-                <input type="text" id="f_dia_display" readonly class="w-full bg-gray-50 p-2 border rounded font-bold text-blue-900 text-sm">
-            </div>
-            <div class="col-span-1">
-                <label class="text-[10px] uppercase font-bold text-gray-400">Horario</label>
-                <input type="text" id="f_hora" readonly class="w-full bg-gray-50 p-2 border rounded font-bold text-blue-900 text-sm">
+            <div class="col-span-2 grid grid-cols-3 gap-2 mt-2">
+                <input type="text" id="f_mod" placeholder="Modelo (Ej. i10)" required class="p-2 border border-gray-300 rounded text-xs uppercase focus:border-blue-900 outline-none">
+                <input type="text" id="f_ver" placeholder="Versión" required class="p-2 border border-gray-300 rounded text-xs uppercase focus:border-blue-900 outline-none">
+                <input type="number" id="f_age" placeholder="Año" required class="p-2 border border-gray-300 rounded text-xs focus:border-blue-900 outline-none">
             </div>
             
-            <div class="col-span-2">
-                <label class="text-[10px] uppercase font-bold text-gray-400">Nombre del Cliente</label>
-                <input type="text" id="f_cliente" required class="w-full p-2 border rounded outline-none focus:ring-1 ring-blue-900 uppercase">
-            </div>
-
+            <div class="col-span-2"><input type="text" id="f_vin" placeholder="VIN (17 Dígitos)" maxlength="17" required class="w-full p-2 border border-gray-300 rounded text-xs uppercase focus:border-blue-900 outline-none tracking-widest font-mono bg-blue-50/30"></div>
+            
             <div class="col-span-1">
-                <label class="text-[10px] uppercase font-bold text-gray-400">Asesor de Ventas</label>
-                <input type="text" id="f_asesor" readonly class="w-full bg-gray-100 p-2 border rounded text-sm font-bold text-gray-600">
-            </div>
-            <div class="col-span-1">
-                <label class="text-[10px] uppercase font-bold text-gray-400">VIN (17 Dígitos)</label>
-                <input type="text" id="f_vin" maxlength="17" required placeholder="ABC123..." class="w-full p-2 border rounded uppercase text-sm focus:ring-1 ring-blue-900">
-            </div>
-
-            <div class="col-span-2 grid grid-cols-3 gap-2">
-                <input type="text" id="f_mod" placeholder="Modelo" required class="p-2 border rounded text-xs uppercase">
-                <input type="text" id="f_ver" placeholder="Versión" required class="p-2 border rounded text-xs uppercase">
-                <input type="number" id="f_age" placeholder="Año" required class="p-2 border rounded text-xs">
-            </div>
-
-            <div class="col-span-1">
-                <label class="text-[10px] uppercase font-bold text-gray-400">Accesorios</label>
-                <select id="f_acc" class="w-full p-2 border rounded text-xs">
+                <label class="text-[9px] uppercase font-bold text-gray-400 tracking-wider">Accesorios</label>
+                <select id="f_acc" class="w-full p-2 border border-gray-300 rounded text-xs outline-none">
                     <option>No</option><option>Sí</option>
                 </select>
             </div>
             <div class="col-span-1">
-                <label class="text-[10px] uppercase font-bold text-gray-400">Ubicación</label>
-                <select id="f_ubi" class="w-full p-2 border rounded text-xs">
+                <label class="text-[9px] uppercase font-bold text-gray-400 tracking-wider">Ubicación</label>
+                <select id="f_ubi" class="w-full p-2 border border-gray-300 rounded text-xs outline-none">
                     <option>Coatza</option><option>Allocation</option><option>Villahermosa</option><option>Traslado</option>
                 </select>
             </div>
 
-            <div class="col-span-2 flex justify-end gap-3 mt-6">
-                <button type="button" onclick="document.getElementById('modalRegistro').classList.add('hidden')" class="px-6 py-2 rounded-lg text-gray-500 font-bold hover:bg-gray-100">Cancelar</button>
-                <button type="submit" class="hyundai-blue text-white px-8 py-2 rounded-lg font-bold shadow-lg hover:bg-blue-800">Solicitar Entrega</button>
+            <div class="col-span-2 flex justify-end gap-3 mt-6 pt-4 border-t">
+                <button type="button" onclick="document.getElementById('modalRegistro').classList.add('hidden')" class="px-5 py-2 rounded-lg text-gray-500 font-bold text-xs hover:bg-gray-100 transition uppercase tracking-wider">Cancelar</button>
+                <button type="submit" class="hyundai-blue text-white px-8 py-2 rounded-lg font-bold text-xs shadow-lg hover:bg-blue-900 transition uppercase tracking-widest">Solicitar</button>
             </div>
         </form>
     </div>
