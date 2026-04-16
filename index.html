@@ -404,7 +404,10 @@
     
     rechazados.forEach(p => {
       let id = p[Object.keys(p)[0]];
-      let btnHtml = !esGerente ? `<button onclick="accion('${id}','eliminar')" class="bg-red-100 text-red-700 hover:bg-red-600 hover:text-white border border-red-200 px-4 py-2 rounded shadow-sm font-bold transition">Quitar</button>` : '';
+      let isOwner = extract(p, 'asesor') === SESION.nombre;
+      
+      // Habilitamos el botón para el gerente si la entrega es suya (o si no es gerente)
+      let btnHtml = (!esGerente || isOwner) ? `<button onclick="accion('${id}','eliminar')" class="bg-red-100 text-red-700 hover:bg-red-600 hover:text-white border border-red-200 px-4 py-2 rounded shadow-sm font-bold transition">Quitar</button>` : '';
       
       let cliente = extract(p, 'cliente') || 'SIN NOMBRE';
       let asesor = extract(p, 'asesor') || 'SIN ASESOR';
